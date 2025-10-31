@@ -1,0 +1,108 @@
+# app.py — Streamlit arayüzü (CLIP + FAISS)
+import os, json, time
+from pathlib import Path
+from typing import List, Tuple
+
+import numpy as np
+import streamlit as st
+from PIL import Image
+
+import torch
+from transformers import CLIPModel, CLIPProcessor
+
+import faiss  # pip install faiss-cpu
+
+st.set_page_config(page_title="Multimodal Search", layout="wide")
+
+# ==== Paths / Config ====
+IMG_DIR  = Path(os.environ.get("IMG_DIR", "data/images"))
+ART_DIR  = Path(os.environ.get("ART_DIR", "artifacts"))
+MODEL_ID = os.environ.get("CLIP_MODEL", "openai/clip-vit-base-patch32")
+
+IDS_PATH   = ART_DIR / "img_ids.json"
+INDEX_BIN  = ART_DIR / "faiss_index.bin"
+INDEX_META = ART_DIR / "faiss_meta.json"
+
+def maybe_normalize(x: np.ndarray) -> np.ndarray:
+    n = np.linalg.norm(x, axis=1, keepdims=True) + 1e-12
+    return x / n
+
+@st.cache_resource(show_spinner=False)
+def load_clip(model_id: str = MODEL_ID):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = CLIPModel.from_pretrained(model_id).to(device).eval()
+    proc  = CLIPProcessor.from_pretrained(model_id)
+    return device, model, proc
+
+@st.cache_resource(show_spinner=False)
+def load_index_and_ids():
+    if not INDEX_BIN.exists() or not INDEX_META.exists():
+        st.error("Kayıtlı FAISS index bulunamadı. Önce: `python scripts\\faiss_search.py build --metric ip`")
+        st.stop()
+    index = faiss.read_index(str(INDEX_BIN))
+    try:
+        meta  = json.load(open(INDEX_META, "r", encoding="utf-8"))
+    except Exception:
+        meta  = json.load(open(INDEX_META, "r", encoding="utf-8-sig"))
+    metric = meta.get("metric", "ip")   # "ip" (cosine) veya "l2"
+
+    try:
+        paths = json.load(open(IDS_PATH, "r", encoding="utf-8"))
+    except Exception:
+        paths = json.load(open(IDS_PATH, "r", encoding="utf-8-sig"))
+    return index, metric, paths
+
+def resolve_path(image_id: str) -> Path:
+    p = Path(image_id)
+    if p.exists():
+        return p
+    return IMG_DIR / image_id
+
+@st.cache_data(show_spinner=False, max_entries=256)
+def encode_text(text: str) -> np.ndarray:
+    # Model/processor/cihazı içeride, cache'li load_clip()'ten alıyoruz
+    device, model, proc = load_clip(MODEL_ID)  # load_clip zaten @st.cache_resource
+    with torch.inference_mode():
+        t = proc(text=[text], return_tensors="pt", padding=True, truncation=True)
+        t = {k: v.to(device) for k, v in t.items()}
+        feats = model.get_text_features(**t).detach().cpu().numpy().astype("float32")
+    return feats
+
+def search(index, metric: str, ids: List[str], q: str, k: int = 12):
+    qv = encode_text(q)  # artık sadece metin veriyoruz
+    if metric == "ip":      # cosine
+        qv = maybe_normalize(qv)
+        scores, I = index.search(qv, k)         # büyük = iyi
+        sims = scores[0].tolist()
+    else:                   # l2
+        dists, I = index.search(qv, k)          # küçük = iyi -> gösterim için eksiye çevir
+        sims = (-dists[0]).tolist()
+    idxs = I[0].tolist()
+    return [(ids[i], float(sims[j])) for j, i in enumerate(idxs)]
+
+# ==== UI ====
+st.title("🔎 Multimodal Görsel Arama (CLIP + FAISS)")
+
+device, model, proc = load_clip(MODEL_ID)
+index, metric, paths = load_index_and_ids()
+
+col1, col2 = st.columns([4,1])
+with col1:
+    q = st.text_input("Metin sorgusu gir (örn. 'deniz kenarında kırmızı araba')", "")
+with col2:
+    topk = st.slider("Top-K", 4, 24, 12, step=4)
+
+if q.strip():
+    t0 = time.perf_counter()
+    results = search(index, metric, paths, q.strip(), k=topk)
+    dt = time.perf_counter() - t0
+    st.caption(f"Latency: **{dt*1000:.1f} ms** • metric: **{metric}** • Top-K: **{topk}**")
+
+    cols = st.columns(4)
+    for i, (p, score) in enumerate(results):
+        with cols[i % 4]:
+            path = resolve_path(p)
+            try:
+                st.image(Image.open(path).convert("RGB"), caption=f"{path.name} • {score:.3f}", use_container_width=True)
+            except Exception:
+                st.warning(f"Açılamadı: {path}")

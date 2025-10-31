@@ -1,0 +1,43 @@
+# venv / cache
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# IDE / OS
+.vscode/
+.idea/
+.vs/
+.DS_Store
+Thumbs.db
+
+# Data & artifacts (repoya girmesin)
+data/
+artifacts/
+datasets/
+checkpoints/
+outputs/
+runs/
+*.pt
+*.pth
+*.bin
+*.onnx
+*.ckpt
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.mp4
+*.avi
+*.mov
+*.jpg
+*.jpeg
+*.png
+*.webp
+
+# JS build
+node_modules/
+dist/
+build/
