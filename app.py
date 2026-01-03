@@ -11,6 +11,7 @@ import torch
 from transformers import CLIPModel, CLIPProcessor
 
 import faiss  # pip install faiss-cpu
+from deep_translator import GoogleTranslator
 
 st.set_page_config(page_title="Multimodal Search", layout="wide")
 
@@ -58,18 +59,29 @@ def resolve_path(image_id: str) -> Path:
         return p
     return IMG_DIR / image_id
 
-@st.cache_data(show_spinner=False, max_entries=256)
-def encode_text(text: str) -> np.ndarray:
-    # Model/processor/cihazı içeride, cache'li load_clip()'ten alıyoruz
-    device, model, proc = load_clip(MODEL_ID)  # load_clip zaten @st.cache_resource
+def translate_to_english(text: str, source_lang: str) -> Tuple[str, str]:
+    """Seçilen dile göre çeviri yap. Returns (translated_text, source_lang)"""
+    if source_lang == 'tr':
+        try:
+            translated = GoogleTranslator(source='tr', target='en').translate(text)
+            return translated, 'tr'
+        except Exception as e:
+            st.warning(f"Çeviri hatası: {e}. Orijinal metin kullanılıyor.")
+            return text, 'tr'
+    else:
+        # İngilizce seçiliyse direkt kullan
+        return text, 'en'
+
+def encode_text_cached(text: str, device, model, proc) -> np.ndarray:
+    """Model ile text encoding yap (cache dışında)"""
     with torch.inference_mode():
         t = proc(text=[text], return_tensors="pt", padding=True, truncation=True)
         t = {k: v.to(device) for k, v in t.items()}
         feats = model.get_text_features(**t).detach().cpu().numpy().astype("float32")
     return feats
 
-def search(index, metric: str, ids: List[str], q: str, k: int = 12):
-    qv = encode_text(q)  # artık sadece metin veriyoruz
+def search(index, metric: str, ids: List[str], q: str, device, model, proc, k: int = 12):
+    qv = encode_text_cached(q, device, model, proc)  # model parametrelerini geç
     if metric == "ip":      # cosine
         qv = maybe_normalize(qv)
         scores, I = index.search(qv, k)         # büyük = iyi
@@ -86,17 +98,35 @@ st.title("🔎 Multimodal Görsel Arama (CLIP + FAISS)")
 device, model, proc = load_clip(MODEL_ID)
 index, metric, paths = load_index_and_ids()
 
+# Dil seçimi toggle
+col_lang, col_space = st.columns([1, 5])
+with col_lang:
+    lang_option = st.toggle("🇹🇷 Türkçe", value=False, help="Açık: Türkçe → İngilizce çeviri | Kapalı: Doğrudan İngilizce")
+    selected_lang = 'tr' if lang_option else 'en'
+
 col1, col2 = st.columns([4,1])
 with col1:
-    q = st.text_input("Metin sorgusu gir (örn. 'deniz kenarında kırmızı araba')", "")
+    placeholder_text = "Örn: 'deniz kenarında kırmızı araba'" if selected_lang == 'tr' else "e.g., 'red car by the sea'"
+    label_text = "Metin sorgusu gir (Türkçe)" if selected_lang == 'tr' else "Enter text query (English)"
+    q = st.text_input(label_text, placeholder=placeholder_text)
 with col2:
     topk = st.slider("Top-K", 4, 24, 12, step=4)
 
 if q.strip():
+    # Seçilen dile göre çeviri yap
+    translated_query, source_lang = translate_to_english(q.strip(), selected_lang)
+    
     t0 = time.perf_counter()
-    results = search(index, metric, paths, q.strip(), k=topk)
+    results = search(index, metric, paths, translated_query, device, model, proc, k=topk)
     dt = time.perf_counter() - t0
-    st.caption(f"Latency: **{dt*1000:.1f} ms** • metric: **{metric}** • Top-K: **{topk}**")
+    
+    # Dil bilgisini göster
+    lang_icon = "🇹🇷" if source_lang == 'tr' else "🇬🇧"
+    translation_info = f"{lang_icon} {source_lang.upper()}"
+    if source_lang == 'tr':
+        translation_info += f" → EN: '{translated_query}'"
+    
+    st.caption(f"Latency: **{dt*1000:.1f} ms** • metric: **{metric}** • Top-K: **{topk}** • {translation_info}")
 
     cols = st.columns(4)
     for i, (p, score) in enumerate(results):
