@@ -93,7 +93,7 @@ def search(index, metric: str, ids: List[str], q: str, device, model, proc, k: i
     return [(ids[i], float(sims[j])) for j, i in enumerate(idxs)]
 
 # ==== UI ====
-st.title("🔎 Multimodal Görsel Arama (CLIP + FAISS)")
+st.title("🔎 Multimodal Görsel Arama")
 
 device, model, proc = load_clip(MODEL_ID)
 index, metric, paths = load_index_and_ids()
@@ -106,7 +106,7 @@ with col_lang:
 
 col1, col2 = st.columns([4,1])
 with col1:
-    placeholder_text = "Örn: 'deniz kenarında kırmızı araba'" if selected_lang == 'tr' else "e.g., 'red car by the sea'"
+    placeholder_text = "Örn: 'Bir görsel aratın.'" if selected_lang == 'tr' else "e.g., 'search for an image.'"
     label_text = "Metin sorgusu gir (Türkçe)" if selected_lang == 'tr' else "Enter text query (English)"
     q = st.text_input(label_text, placeholder=placeholder_text)
 with col2:
